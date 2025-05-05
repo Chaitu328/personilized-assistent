@@ -1,11 +1,7 @@
 import os
 import json
-from groq import Groq
+import re
 from utils import split_text_into_chunks, clean_text
-
-# Initialize Groq client
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-groq_client = Groq(api_key=GROQ_API_KEY)
 
 def generate_flashcards(text, retriever, num_cards=10):
     """
@@ -41,32 +37,66 @@ def generate_flashcards(text, retriever, num_cards=10):
     full_prompt = user_prompt + context
     
     try:
-        response = groq_client.chat.completions.create(
-            model="llama3-70b-8192",  # Using Llama 3 70B model from Groq
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": full_prompt}
-            ],
-            temperature=0.7,
-        )
+        # Simple rule-based flashcard generation
+        # Extract sentences that look like they contain facts, definitions or key concepts
+        sentences = re.split(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?)\s', context)
+        potential_cards = []
         
-        # Parse the response
-        cards_json = json.loads(response.choices[0].message.content)
+        # Extract potential definitions
+        definition_patterns = [
+            r'([A-Z][a-z]+(?:\s+[a-z]+)*)\s+(?:is|are|refers to|means|describes)\s+([^\.]+)',
+            r'([A-Z][a-z]+(?:\s+[a-z]+)*):?\s+([^\.]+)'
+        ]
         
-        # Ensure we have a list of flashcards
-        if "flashcards" in cards_json:
-            flashcards = cards_json["flashcards"]
-        else:
-            # If the model didn't use the exact "flashcards" key, just use the first array found
-            for key, value in cards_json.items():
-                if isinstance(value, list) and len(value) > 0:
-                    flashcards = value
+        # Look for sentences that match definition patterns
+        for sentence in sentences:
+            for pattern in definition_patterns:
+                matches = re.findall(pattern, sentence)
+                for match in matches:
+                    if len(match) >= 2 and len(match[0]) > 3 and len(match[1]) > 10:
+                        term = match[0].strip()
+                        definition = match[1].strip()
+                        potential_cards.append({
+                            "question": f"What is {term}?",
+                            "answer": definition
+                        })
+        
+        # If we don't have enough cards from definitions, add factual questions
+        if len(potential_cards) < num_cards:
+            fact_patterns = [
+                r'([A-Z][a-z]+(?:\s+[a-z]+)*)\s+([a-z]+(?:\s+[a-z]+)*)\s+([^\.]+)'  # Subject verb object
+            ]
+            
+            for sentence in sentences:
+                if len(potential_cards) >= num_cards:
                     break
-            else:
-                # Fallback if no array is found
-                flashcards = []
+                    
+                # Skip very short or very long sentences
+                if len(sentence.split()) < 5 or len(sentence.split()) > 25:
+                    continue
+                    
+                # Create a question by converting a statement to a question
+                # For example: "The Earth orbits the Sun" -> "What orbits the Sun?"
+                words = sentence.split()
+                if len(words) >= 5:
+                    subject = ' '.join(words[:2])
+                    remainder = ' '.join(words[2:])
+                    potential_cards.append({
+                        "question": f"What {remainder}?",
+                        "answer": subject + " " + remainder
+                    })
+                    
+        # Ensure we only return the requested number of unique cards
+        unique_cards = []
+        questions_seen = set()
         
-        return flashcards[:num_cards]  # Ensure we only return the requested number
+        for card in potential_cards:
+            q = card["question"].lower()
+            if q not in questions_seen and len(unique_cards) < num_cards:
+                questions_seen.add(q)
+                unique_cards.append(card)
+                
+        return unique_cards[:num_cards]
     
     except Exception as e:
         print(f"Error generating flashcards: {e}")

@@ -16,15 +16,97 @@ STOPWORDS = {
     'only', 'own', 'same', 'so', 'than', 'too', 'very', 'you', 'your'
 }
 
+# Simple document store class
+class SimpleDocStore:
+    """A simple document store with basic text-based retrieval"""
+
+    def __init__(self, documents):
+        """
+        Initialize with a list of Document objects
+        
+        Args:
+            documents (List[Document]): List of Document objects
+        """
+        self.documents = documents
+        
+        # Create an index of word frequencies for each document
+        self.document_terms = []
+        for doc in documents:
+            # Tokenize and clean each document
+            text = doc.page_content.lower()
+            # Split on non-alphanumeric chars and filter out stopwords
+            terms = [term for term in re.findall(r'\b\w+\b', text) 
+                     if term not in STOPWORDS and len(term) > 2]
+            # Count term frequencies
+            term_counter = Counter(terms)
+            self.document_terms.append(term_counter)
+            
+    def as_retriever(self, search_kwargs=None):
+        """Return self as a retriever-like object"""
+        return self
+    
+    def get_relevant_documents(self, query, k=4):
+        """
+        Retrieve relevant documents for the query
+        
+        Args:
+            query (str): The query text
+            k (int): Number of documents to retrieve
+            
+        Returns:
+            List[Document]: List of relevant documents
+        """
+        # Extract terms from query
+        query_terms = [term for term in re.findall(r'\b\w+\b', query.lower()) 
+                     if term not in STOPWORDS and len(term) > 2]
+        
+        # Calculate similarity score for each document
+        scores = []
+        for i, doc_terms in enumerate(self.document_terms):
+            # Count matching terms
+            score = sum(doc_terms[term] for term in query_terms if term in doc_terms)
+            scores.append((i, score))
+        
+        # Sort by score descending
+        scores.sort(key=lambda x: x[1], reverse=True)
+        
+        # Return top k documents
+        top_docs = [self.documents[i] for i, _ in scores[:k]]
+        return top_docs
+    
+    def add_documents(self, documents):
+        """
+        Add new documents to the store
+        
+        Args:
+            documents (List[Document]): List of Document objects to add
+        """
+        # Add the documents
+        self.documents.extend(documents)
+        
+        # Update the index for the new documents
+        for doc in documents:
+            text = doc.page_content.lower()
+            terms = [term for term in re.findall(r'\b\w+\b', text) 
+                     if term not in STOPWORDS and len(term) > 2]
+            term_counter = Counter(terms)
+            self.document_terms.append(term_counter)
+            
+    def similarity_search(self, query, k=4):
+        """
+        Alias for get_relevant_documents
+        """
+        return self.get_relevant_documents(query, k)
+
 def create_vector_store(text):
     """
-    Create a vector store from the provided text
+    Create a document store from the provided text
     
     Args:
-        text (str): The text to create a vector store from
+        text (str): The text to create a document store from
         
     Returns:
-        FAISS: The created vector store
+        SimpleDocStore: The created document store
     """
     # Split text into chunks
     text_splitter = RecursiveCharacterTextSplitter(
@@ -38,10 +120,10 @@ def create_vector_store(text):
     # Convert chunks to documents
     docs = [Document(page_content=chunk, metadata={}) for chunk in chunks]
     
-    # Create the vector store
-    vector_store = FAISS.from_documents(docs, embeddings)
+    # Create the document store
+    doc_store = SimpleDocStore(docs)
     
-    return vector_store
+    return doc_store
 
 def get_retriever(vector_store, search_kwargs=None):
     """
@@ -78,14 +160,14 @@ def similarity_search(vector_store, query, k=4):
 
 def update_vector_store(vector_store, new_text):
     """
-    Update the vector store with new text
+    Update the document store with new text
     
     Args:
-        vector_store: The vector store to update
-        new_text (str): The new text to add to the vector store
+        vector_store: The document store to update
+        new_text (str): The new text to add to the document store
         
     Returns:
-        FAISS: The updated vector store
+        SimpleDocStore: The updated document store
     """
     # Split new text into chunks
     text_splitter = RecursiveCharacterTextSplitter(
@@ -99,7 +181,7 @@ def update_vector_store(vector_store, new_text):
     # Convert chunks to documents
     docs = [Document(page_content=chunk, metadata={}) for chunk in chunks]
     
-    # Add documents to the vector store
+    # Add documents to the document store
     vector_store.add_documents(docs)
     
     return vector_store

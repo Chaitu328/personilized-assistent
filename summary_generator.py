@@ -1,10 +1,18 @@
 import os
-from groq import Groq
+import re
+from collections import Counter
 from utils import extract_topics, split_text_into_chunks
 
-# Initialize Groq client
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-groq_client = Groq(api_key=GROQ_API_KEY)
+# Define common stopwords (for text analysis)
+STOPWORDS = {
+    'the', 'a', 'an', 'and', 'but', 'if', 'or', 'because', 'as', 'what', 'which', 'this', 'that', 'these', 'those',
+    'then', 'just', 'so', 'than', 'such', 'when', 'who', 'how', 'where', 'why', 'is', 'are', 'am', 'was', 'were',
+    'be', 'been', 'being', 'have', 'has', 'had', 'having', 'do', 'does', 'did', 'doing', 'to', 'from', 'of', 'at',
+    'by', 'for', 'with', 'about', 'against', 'between', 'into', 'through', 'during', 'before', 'after', 'above',
+    'below', 'up', 'down', 'in', 'out', 'on', 'off', 'over', 'under', 'again', 'further', 'then', 'once', 'here',
+    'there', 'all', 'any', 'both', 'each', 'few', 'more', 'most', 'other', 'some', 'such', 'no', 'nor', 'not',
+    'only', 'own', 'same', 'so', 'than', 'too', 'very', 'you', 'your'
+}
 
 def identify_topics(text, retriever):
     """
@@ -38,33 +46,47 @@ def identify_topics(text, retriever):
     full_prompt = user_prompt + context
     
     try:
-        response = groq_client.chat.completions.create(
-            model="llama3-70b-8192",  # Using Llama 3 70B model from Groq
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": full_prompt}
-            ],
-            temperature=0.7,
-        )
+        # Simple text-based topic extraction
+        # Count word frequencies and find common phrases
         
-        # Parse the response to get the topics
-        import json
-        result = json.loads(response.choices[0].message.content)
+        # Clean and tokenize the text
+        clean_text = context.lower()
+        words = re.findall(r'\b\w+\b', clean_text)
+        words = [w for w in words if w not in STOPWORDS and len(w) > 3]
         
-        # Handle different possible response formats
-        if isinstance(result, dict) and "topics" in result:
-            topics = result["topics"]
-        elif isinstance(result, dict) and any(isinstance(result.get(k), list) for k in result):
-            # Find the first list in the response
-            for k, v in result.items():
-                if isinstance(v, list):
-                    topics = v
+        # Count word frequencies
+        word_counts = Counter(words)
+        
+        # Find most common words
+        common_words = [word for word, count in word_counts.most_common(20)]
+        
+        # Extract phrases around common words
+        phrases = []
+        sentences = re.split(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?)\s', clean_text)
+        
+        for word in common_words:
+            for sentence in sentences:
+                if word in sentence:
+                    # Find noun phrases containing the word
+                    for match in re.finditer(r'\b([a-z]+\s+){0,2}' + word + r'(\s+[a-z]+){0,2}\b', sentence):
+                        phrase = match.group(0).strip()
+                        if 2 <= len(phrase.split()) <= 5:  # Ensure phrase is 2-5 words
+                            phrases.append(phrase)
+        
+        # Get unique phrases and take top 5-8
+        unique_phrases = list(set(phrases))
+        topics = sorted(unique_phrases, key=lambda x: sum(word_counts.get(w, 0) for w in x.split()))[-8:]
+        
+        # If we couldn't extract enough topics, use the top words as single-word topics
+        if len(topics) < 5:
+            for word in common_words:
+                if len(topics) >= 8:
                     break
-        elif isinstance(result, list):
-            topics = result
-        else:
-            # Fallback to basic topic extraction if the API response isn't as expected
-            topics = extract_topics(text)
+                if word not in [t.split()[0] for t in topics]:
+                    topics.append(word)
+        
+        # Capitalize topic phrases
+        topics = [' '.join(word.capitalize() for word in topic.split()) for topic in topics]
         
         return topics
     
@@ -99,17 +121,48 @@ def generate_summary_for_topic(topic, retriever):
     full_prompt = user_prompt + "Here are the relevant sections from the course material:\n\n" + context
     
     try:
-        response = groq_client.chat.completions.create(
-            model="llama3-70b-8192",  # Using Llama 3 70B model from Groq
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": full_prompt}
-            ],
-            temperature=0.7,
-            max_tokens=800,
-        )
+        # Simple text-based approach to generate a summary
+        # Extract sentences that mention the topic or related terms
         
-        return response.choices[0].message.content
+        # Break the topic into words
+        topic_words = set(topic.lower().split())
+        
+        # Split context into sentences
+        sentences = re.split(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?)\s', context)
+        
+        # Score each sentence based on relevance to the topic
+        scored_sentences = []
+        for sentence in sentences:
+            # Skip very short sentences
+            if len(sentence.split()) < 5:
+                continue
+                
+            sentence_lower = sentence.lower()
+            
+            # Basic scoring: count how many topic words appear in the sentence
+            # and give higher weight to sentences that contain the exact topic phrase
+            score = 0
+            for word in topic_words:
+                if word in sentence_lower and word not in STOPWORDS:
+                    score += 1
+                    
+            # Bonus for exact topic phrase
+            if topic.lower() in sentence_lower:
+                score += 3
+                
+            if score > 0:
+                scored_sentences.append((sentence, score))
+                
+        # Sort sentences by score and take the top ones for the summary
+        scored_sentences.sort(key=lambda x: x[1], reverse=True)
+        selected_sentences = [s[0] for s in scored_sentences[:5]]
+        
+        # If we found enough relevant sentences, construct a summary
+        if selected_sentences:
+            summary = ' '.join(selected_sentences)
+            return summary
+        else:
+            return f"No specific information about '{topic}' found in the course material."
     
     except Exception as e:
         print(f"Error generating summary for topic '{topic}': {e}")
