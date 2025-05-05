@@ -31,11 +31,38 @@ def answer_question(question, retriever):
     
     # Simple text-based approach to answer questions using the retrieved context
     try:
-        # Enhanced keyword extraction and answer generation
-        
-        # 1. Extract and classify question components
+        # First, handle special cases like questions about the overall document topic
         question_lower = question.lower()
         
+        # Special case handling for general document questions
+        if any(phrase in question_lower for phrase in ["what is this pdf about", "what is this document about", 
+                "main topic", "which topic", "what topic", "subject of this", "this pdf explain"]):
+            
+            # For questions about the document's overall topic, take a different approach
+            # Analyze the first few paragraphs which typically contain topic information
+            paragraphs = context.split('\n\n')
+            intro_text = '\n\n'.join(paragraphs[:min(3, len(paragraphs))])
+            
+            # Extract likely topic indicators from the introduction
+            topic_indicators = ["introduction", "overview", "about", "this paper", "this document", 
+                              "we present", "discusses", "examines", "explores", "focuses on"]
+            
+            topic_sentences = []
+            sentences = re.split(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?)\s', intro_text)
+            
+            for sentence in sentences:
+                if any(indicator in sentence.lower() for indicator in topic_indicators):
+                    topic_sentences.append(sentence)
+            
+            # If we found specific topic sentences, use them
+            if topic_sentences:
+                return "This document appears to be about " + " ".join(topic_sentences[:2])
+            
+            # Otherwise, use the first 2-3 sentences which often state the document's purpose
+            else:
+                return "Based on the document content, it appears to cover: " + " ".join(sentences[:3])
+        
+        # Regular question handling continues below
         # Identify question type
         question_starters = {
             "what": "descriptive",
@@ -185,9 +212,40 @@ def create_qa_chain(retriever):
         docs = retriever.get_relevant_documents(query)
         context = "\n\n".join([doc.page_content for doc in docs])
         
-        # 1. Extract and classify question components
+        # First, handle special cases like questions about the overall document topic
         query_lower = query.lower()
         
+        # Special case handling for general document questions
+        if any(phrase in query_lower for phrase in ["what is this pdf about", "what is this document about", 
+                "main topic", "which topic", "what topic", "subject of this", "this pdf explain"]):
+            
+            # For questions about the document's overall topic, take a different approach
+            # Analyze the first few paragraphs which typically contain topic information
+            paragraphs = context.split('\n\n')
+            intro_text = '\n\n'.join(paragraphs[:min(3, len(paragraphs))])
+            
+            # Extract likely topic indicators from the introduction
+            topic_indicators = ["introduction", "overview", "about", "this paper", "this document", 
+                              "we present", "discusses", "examines", "explores", "focuses on"]
+            
+            topic_sentences = []
+            sentences = re.split(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?)\s', intro_text)
+            
+            for sentence in sentences:
+                if any(indicator in sentence.lower() for indicator in topic_indicators):
+                    topic_sentences.append(sentence)
+            
+            # If we found specific topic sentences, use them
+            if topic_sentences:
+                result = "This document appears to be about " + " ".join(topic_sentences[:2])
+                return {"result": result, "source_documents": docs}
+            
+            # Otherwise, use the first 2-3 sentences which often state the document's purpose
+            else:
+                result = "Based on the document content, it appears to cover: " + " ".join(sentences[:3])
+                return {"result": result, "source_documents": docs}
+                
+        # Regular question handling continues
         # Identify question type
         question_starters = {
             "what": "descriptive",
