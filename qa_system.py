@@ -31,34 +31,136 @@ def answer_question(question, retriever):
     
     # Simple text-based approach to answer questions using the retrieved context
     try:
-        # Extract keywords from the question
-        keywords = re.findall(r'\b\w+\b', question.lower())
-        keywords = [k for k in keywords if k not in {'the', 'a', 'an', 'in', 'on', 'at', 'of', 'for', 'with', 'by', 'to', 'and', 'or', 'but', 'is', 'are', 'what', 'when', 'where', 'why', 'how'}]
+        # Enhanced keyword extraction and answer generation
         
-        # Find sentences in the context that contain keywords
-        relevant_sentences = []
+        # 1. Extract and classify question components
+        question_lower = question.lower()
+        
+        # Identify question type
+        question_starters = {
+            "what": "descriptive",
+            "who": "entity",
+            "when": "temporal",
+            "where": "location",
+            "why": "reasoning",
+            "how": "process",
+            "which": "selection",
+            "can": "possibility",
+            "does": "verification",
+            "is": "verification",
+            "are": "verification",
+            "do": "verification",
+            "define": "definition",
+            "explain": "explanation",
+            "compare": "comparison",
+            "contrast": "comparison",
+            "list": "enumeration",
+            "describe": "descriptive"
+        }
+        
+        # Determine question type
+        question_type = "general"
+        for starter, q_type in question_starters.items():
+            if question_lower.startswith(starter) or f" {starter} " in question_lower:
+                question_type = q_type
+                break
+                
+        # Extract meaningful keywords (excluding common words)
+        common_words = {'the', 'a', 'an', 'in', 'on', 'at', 'of', 'for', 'with', 'by', 'to', 'and', 'or', 
+                       'but', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'am', 'this', 'that', 
+                       'these', 'those', 'it', 'its', 'they', 'them', 'their', 'he', 'she', 'him', 'her', 
+                       'what', 'when', 'where', 'why', 'how', 'which', 'who', 'whom', 'whose'}
+        
+        # Extract all words
+        all_words = re.findall(r'\b\w+\b', question_lower)
+        
+        # Filter important keywords
+        keywords = [k for k in all_words if k not in common_words and len(k) > 2]
+        
+        # If we have too few keywords, include some common question words that might be important
+        if len(keywords) < 2:
+            question_specific_words = ['what', 'when', 'where', 'why', 'how', 'which', 'who']
+            for word in all_words:
+                if word in question_specific_words and word not in keywords:
+                    keywords.append(word)
+        
+        # 2. Score sentences based on multiple factors
         sentences = re.split(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?)\s', context)
+        scored_sentences = []
         
         for sentence in sentences:
             sentence = sentence.strip()
-            if not sentence:
+            if not sentence or len(sentence.split()) < 5:
                 continue
                 
-            # Count keywords in the sentence
-            keyword_count = sum(1 for k in keywords if k in sentence.lower())
-            if keyword_count > 0:
-                relevant_sentences.append((sentence, keyword_count))
+            sentence_lower = sentence.lower()
+            
+            # Multiple scoring factors:
+            # a. Keyword matches (basic relevance)
+            # b. Keyword density (prefer sentences with higher concentration of keywords)
+            # c. Sentence length (prefer reasonable length sentences)
+            # d. Question type matching (e.g., "when" questions should match sentences with dates)
+            
+            # Basic keyword match count
+            keyword_count = sum(1 for k in keywords if k in sentence_lower)
+            
+            # Skip sentences with no keyword matches
+            if keyword_count == 0:
+                continue
+                
+            # Calculate keyword density (matches per word)
+            word_count = len(sentence.split())
+            keyword_density = keyword_count / word_count if word_count > 0 else 0
+            
+            # Length factor (prefer medium-length sentences)
+            length_factor = 1.0
+            if 10 <= word_count <= 25:  # Ideal length
+                length_factor = 1.5
+            elif word_count > 40:  # Too long
+                length_factor = 0.7
+                
+            # Question type matching bonus
+            type_match_bonus = 1.0
+            if question_type == "temporal" and re.search(r'\b(in|on|during|year|date|when|time|century|decade|period|era|age)\b', sentence_lower):
+                type_match_bonus = 2.0
+            elif question_type == "location" and re.search(r'\b(in|at|on|near|location|place|where|region|area|country|city|state)\b', sentence_lower):
+                type_match_bonus = 2.0
+            elif question_type == "entity" and re.search(r'\b(person|people|who|name|individual|group|organization|company)\b', sentence_lower):
+                type_match_bonus = 2.0
+            elif question_type == "reasoning" and re.search(r'\b(because|since|reason|cause|effect|result|due to|why|therefore)\b', sentence_lower):
+                type_match_bonus = 2.0
+            elif question_type == "definition" and re.search(r'\b(is|are|refers to|defined as|means|definition)\b', sentence_lower):
+                type_match_bonus = 2.0
+            
+            # Calculate final score
+            final_score = keyword_count * keyword_density * length_factor * type_match_bonus
+            
+            scored_sentences.append((sentence, final_score))
         
-        # Sort by keyword count
-        relevant_sentences.sort(key=lambda x: x[1], reverse=True)
+        # 3. Select and organize the most relevant sentences
+        scored_sentences.sort(key=lambda x: x[1], reverse=True)
         
-        # Construct an answer using the most relevant sentences
-        if relevant_sentences:
-            answer_components = [s[0] for s in relevant_sentences[:3]]
-            answer = " ".join(answer_components)
+        # Get top 3-5 sentences depending on scores
+        top_sentences = [s for s, score in scored_sentences[:5] if score > 0.5]
+        
+        # 4. Construct a coherent answer
+        if top_sentences:
+            # If we have only 1-2 sentences, just join them
+            if len(top_sentences) <= 2:
+                answer = " ".join(top_sentences)
+            else:
+                # For 3+ sentences, create a more structured response
+                if question_type in ["definition", "descriptive", "explanation"]:
+                    answer = "Based on the course materials: " + " ".join(top_sentences)
+                elif question_type == "enumeration":
+                    # Format as a list for enumeration questions
+                    answer = "From the course materials:\n- " + "\n- ".join(top_sentences)
+                else:
+                    answer = " ".join(top_sentences)
+            
             return answer
         else:
-            return "I couldn't find a specific answer to your question in the provided course materials."
+            return "I couldn't find specific information to answer your question in the provided course materials."
     
     except Exception as e:
         print(f"Error answering question: {e}")
@@ -79,37 +181,142 @@ def create_qa_chain(retriever):
     # This is a simplified version since we're not using Groq LLMs
     
     def answer_function(query):
+        """Improved answer function with better relevance scoring and answer formatting"""
         docs = retriever.get_relevant_documents(query)
         context = "\n\n".join([doc.page_content for doc in docs])
         
-        # Extract keywords from the question
-        keywords = re.findall(r'\b\w+\b', query.lower())
-        keywords = [k for k in keywords if k not in {'the', 'a', 'an', 'in', 'on', 'at', 'of', 'for', 'with', 'by', 'to', 'and', 'or', 'but', 'is', 'are', 'what', 'when', 'where', 'why', 'how'}]
+        # 1. Extract and classify question components
+        query_lower = query.lower()
         
-        # Find sentences in the context that contain keywords
-        relevant_sentences = []
+        # Identify question type
+        question_starters = {
+            "what": "descriptive",
+            "who": "entity",
+            "when": "temporal",
+            "where": "location",
+            "why": "reasoning",
+            "how": "process",
+            "which": "selection",
+            "can": "possibility",
+            "does": "verification",
+            "is": "verification",
+            "are": "verification",
+            "do": "verification",
+            "define": "definition",
+            "explain": "explanation",
+            "compare": "comparison",
+            "contrast": "comparison",
+            "list": "enumeration",
+            "describe": "descriptive"
+        }
+        
+        # Determine question type
+        question_type = "general"
+        for starter, q_type in question_starters.items():
+            if query_lower.startswith(starter) or f" {starter} " in query_lower:
+                question_type = q_type
+                break
+                
+        # Extract meaningful keywords (excluding common words)
+        common_words = {'the', 'a', 'an', 'in', 'on', 'at', 'of', 'for', 'with', 'by', 'to', 'and', 'or', 
+                       'but', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'am', 'this', 'that', 
+                       'these', 'those', 'it', 'its', 'they', 'them', 'their', 'he', 'she', 'him', 'her', 
+                       'what', 'when', 'where', 'why', 'how', 'which', 'who', 'whom', 'whose'}
+        
+        # Extract all words
+        all_words = re.findall(r'\b\w+\b', query_lower)
+        
+        # Filter important keywords
+        keywords = [k for k in all_words if k not in common_words and len(k) > 2]
+        
+        # If we have too few keywords, include some common question words that might be important
+        if len(keywords) < 2:
+            question_specific_words = ['what', 'when', 'where', 'why', 'how', 'which', 'who']
+            for word in all_words:
+                if word in question_specific_words and word not in keywords:
+                    keywords.append(word)
+        
+        # 2. Score sentences based on multiple factors
         sentences = re.split(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?)\s', context)
+        scored_sentences = []
         
         for sentence in sentences:
             sentence = sentence.strip()
-            if not sentence:
+            if not sentence or len(sentence.split()) < 5:
                 continue
                 
-            # Count keywords in the sentence
-            keyword_count = sum(1 for k in keywords if k in sentence.lower())
-            if keyword_count > 0:
-                relevant_sentences.append((sentence, keyword_count))
+            sentence_lower = sentence.lower()
+            
+            # Multiple scoring factors:
+            # a. Keyword matches (basic relevance)
+            # b. Keyword density (prefer sentences with higher concentration of keywords)
+            # c. Sentence length (prefer reasonable length sentences)
+            # d. Question type matching (e.g., "when" questions should match sentences with dates)
+            
+            # Basic keyword match count
+            keyword_count = sum(1 for k in keywords if k in sentence_lower)
+            
+            # Skip sentences with no keyword matches
+            if keyword_count == 0:
+                continue
+                
+            # Calculate keyword density (matches per word)
+            word_count = len(sentence.split())
+            keyword_density = keyword_count / word_count if word_count > 0 else 0
+            
+            # Length factor (prefer medium-length sentences)
+            length_factor = 1.0
+            if 10 <= word_count <= 25:  # Ideal length
+                length_factor = 1.5
+            elif word_count > 40:  # Too long
+                length_factor = 0.7
+                
+            # Question type matching bonus
+            type_match_bonus = 1.0
+            if question_type == "temporal" and re.search(r'\b(in|on|during|year|date|when|time|century|decade|period|era|age)\b', sentence_lower):
+                type_match_bonus = 2.0
+            elif question_type == "location" and re.search(r'\b(in|at|on|near|location|place|where|region|area|country|city|state)\b', sentence_lower):
+                type_match_bonus = 2.0
+            elif question_type == "entity" and re.search(r'\b(person|people|who|name|individual|group|organization|company)\b', sentence_lower):
+                type_match_bonus = 2.0
+            elif question_type == "reasoning" and re.search(r'\b(because|since|reason|cause|effect|result|due to|why|therefore)\b', sentence_lower):
+                type_match_bonus = 2.0
+            elif question_type == "definition" and re.search(r'\b(is|are|refers to|defined as|means|definition)\b', sentence_lower):
+                type_match_bonus = 2.0
+            
+            # Calculate final score
+            final_score = keyword_count * keyword_density * length_factor * type_match_bonus
+            
+            scored_sentences.append((sentence, final_score))
         
-        # Sort by keyword count
-        relevant_sentences.sort(key=lambda x: x[1], reverse=True)
+        # 3. Select and organize the most relevant sentences
+        scored_sentences.sort(key=lambda x: x[1], reverse=True)
         
-        # Construct an answer using the most relevant sentences
-        if relevant_sentences:
-            answer_components = [s[0] for s in relevant_sentences[:3]]
-            answer = " ".join(answer_components)
+        # Get top 3-5 sentences depending on scores
+        top_sentences = [s for s, score in scored_sentences[:5] if score > 0.5]
+        
+        # 4. Construct a coherent answer
+        if top_sentences:
+            # If we have only 1-2 sentences, just join them
+            if len(top_sentences) <= 2:
+                answer = " ".join(top_sentences)
+            else:
+                # For 3+ sentences, create a more structured response
+                if question_type in ["definition", "descriptive", "explanation"]:
+                    answer = "Based on the course materials: " + " ".join(top_sentences)
+                elif question_type == "enumeration":
+                    # Format as a list for enumeration questions
+                    answer = "From the course materials:\n- " + "\n- ".join(top_sentences)
+                else:
+                    answer = " ".join(top_sentences)
+                    
+            # Ensure answer is not too long
+            if len(answer) > 600:
+                answer = answer[:597] + "..."
+            
             return {"result": answer, "source_documents": docs}
         else:
-            return {"result": "I couldn't find a specific answer to your question in the provided course materials.", "source_documents": docs}
+            return {"result": "I couldn't find specific information to answer your question in the provided course materials.", "source_documents": docs}
     
     # Return a callable object that mimics the chain interface
     class SimpleQAChain:

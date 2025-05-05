@@ -121,8 +121,7 @@ def generate_summary_for_topic(topic, retriever):
     full_prompt = user_prompt + "Here are the relevant sections from the course material:\n\n" + context
     
     try:
-        # Simple text-based approach to generate a summary
-        # Extract sentences that mention the topic or related terms
+        # Enhanced text-based approach to generate a more coherent summary
         
         # Break the topic into words
         topic_words = set(topic.lower().split())
@@ -130,36 +129,110 @@ def generate_summary_for_topic(topic, retriever):
         # Split context into sentences
         sentences = re.split(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?)\s', context)
         
-        # Score each sentence based on relevance to the topic
+        # Score each sentence based on multiple relevance factors
         scored_sentences = []
-        for sentence in sentences:
-            # Skip very short sentences
-            if len(sentence.split()) < 5:
+        position_weight = {}  # Track sentence position importance
+        
+        # First pass: identify important sentences by position (intro/conclusion)
+        section_marker_terms = ["introduction", "conclusion", "summary", "overview", "background", 
+                               "key points", "findings", "results", "analysis", "discussion"]
+        
+        # Mark sentences that appear to introduce sections
+        for i, sentence in enumerate(sentences):
+            sentence_lower = sentence.lower()
+            
+            # Higher importance for first/last sentences of the context (likely intro/conclusion)
+            if i < 3:  # First few sentences likely introduce the topic
+                position_weight[i] = 2
+            elif i > len(sentences) - 4:  # Last few sentences often summarize
+                position_weight[i] = 1.5
+            else:
+                position_weight[i] = 1
+                
+            # Check if sentence appears to be a section header or intro
+            if any(marker in sentence_lower for marker in section_marker_terms):
+                position_weight[i] = 2.5
+                
+            # Check for sentences that have section numbering
+            if re.match(r'^(\d+\.|\([\d]+\)|\w+\))', sentence.strip()):
+                position_weight[i] = 2
+            
+        # Second pass: score sentences based on topic relevance and position
+        for i, sentence in enumerate(sentences):
+            # Skip very short or very long sentences
+            if len(sentence.split()) < 5 or len(sentence.split()) > 40:
                 continue
                 
             sentence_lower = sentence.lower()
             
-            # Basic scoring: count how many topic words appear in the sentence
-            # and give higher weight to sentences that contain the exact topic phrase
-            score = 0
+            # Multiple scoring factors:
+            # 1. Topic word matches
+            # 2. Position importance 
+            # 3. Sentence length (prefer medium length)
+            # 4. Presence of key explanatory phrases
+            
+            # Base score: topic word matches
+            base_score = 0
             for word in topic_words:
                 if word in sentence_lower and word not in STOPWORDS:
-                    score += 1
+                    base_score += 1
                     
             # Bonus for exact topic phrase
             if topic.lower() in sentence_lower:
-                score += 3
+                base_score += 3
                 
-            if score > 0:
-                scored_sentences.append((sentence, score))
+            # No matches to topic, skip unless it's an important position
+            if base_score == 0 and position_weight.get(i, 1) < 1.5:
+                continue
                 
-        # Sort sentences by score and take the top ones for the summary
-        scored_sentences.sort(key=lambda x: x[1], reverse=True)
-        selected_sentences = [s[0] for s in scored_sentences[:5]]
+            # Adjust score by position importance
+            position_factor = position_weight.get(i, 1)
+            
+            # Prefer medium-length sentences (not too short, not too long)
+            length = len(sentence.split())
+            length_factor = 1.0
+            if 10 <= length <= 25:  # Ideal length
+                length_factor = 1.2
+            elif length > 35:  # Too long
+                length_factor = 0.8
+                
+            # Bonus for explanatory phrases
+            explanation_phrases = ["means", "refers to", "is defined as", "is a", "describes", "explains", 
+                                  "consists of", "involves", "includes", "represents"]
+            if any(phrase in sentence_lower for phrase in explanation_phrases):
+                explanation_bonus = 1.5
+            else:
+                explanation_bonus = 1.0
+                
+            # Final score calculation
+            final_score = base_score * position_factor * length_factor * explanation_bonus
+            
+            if final_score > 0:
+                scored_sentences.append((sentence, i, final_score))
+                
+        # Sort sentences by score (primary) and position (secondary) 
+        scored_sentences.sort(key=lambda x: (x[2], -x[1]), reverse=True)
+        
+        # Take top 5-7 sentences based on score
+        top_sentences = scored_sentences[:7]
+        
+        # Sort selected sentences by original position to maintain narrative flow
+        top_sentences.sort(key=lambda x: x[1])
+        
+        selected_sentences = [s[0] for s in top_sentences]
         
         # If we found enough relevant sentences, construct a summary
         if selected_sentences:
-            summary = ' '.join(selected_sentences)
+            # Add an introductory phrase if this isn't obvious
+            intro = f"The topic of {topic} " if not any(topic.lower() in s.lower() for s in selected_sentences[:1]) else ""
+            
+            # Join sentences into a coherent paragraph
+            summary = intro + ' '.join(selected_sentences)
+            
+            # Limit summary length
+            if len(summary) > 500:
+                summary = summary[:497] + "..."
+                
             return summary
         else:
             return f"No specific information about '{topic}' found in the course material."

@@ -37,66 +37,108 @@ def generate_flashcards(text, retriever, num_cards=10):
     full_prompt = user_prompt + context
     
     try:
-        # Simple rule-based flashcard generation
-        # Extract sentences that look like they contain facts, definitions or key concepts
+        # Improved flashcard generation that focuses on clear questions and concise answers
         sentences = re.split(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?)\s', context)
         potential_cards = []
         
-        # Extract potential definitions
-        definition_patterns = [
-            r'([A-Z][a-z]+(?:\s+[a-z]+)*)\s+(?:is|are|refers to|means|describes)\s+([^\.]+)',
-            r'([A-Z][a-z]+(?:\s+[a-z]+)*):?\s+([^\.]+)'
-        ]
-        
-        # Look for sentences that match definition patterns
+        # Look for definition sentences - these make good flashcards
         for sentence in sentences:
-            for pattern in definition_patterns:
-                matches = re.findall(pattern, sentence)
-                for match in matches:
-                    if len(match) >= 2 and len(match[0]) > 3 and len(match[1]) > 10:
-                        term = match[0].strip()
-                        definition = match[1].strip()
-                        potential_cards.append({
-                            "question": f"What is {term}?",
-                            "answer": definition
-                        })
-        
-        # If we don't have enough cards from definitions, add factual questions
-        if len(potential_cards) < num_cards:
-            fact_patterns = [
-                r'([A-Z][a-z]+(?:\s+[a-z]+)*)\s+([a-z]+(?:\s+[a-z]+)*)\s+([^\.]+)'  # Subject verb object
-            ]
+            # Skip very short or very long sentences
+            if len(sentence.split()) < 5 or len(sentence.split()) > 30:
+                continue
+                
+            sentence = sentence.strip()
             
-            for sentence in sentences:
-                if len(potential_cards) >= num_cards:
-                    break
-                    
-                # Skip very short or very long sentences
-                if len(sentence.split()) < 5 or len(sentence.split()) > 25:
+            # Pattern 1: Explicit definitions with "is defined as", "is", "refers to", etc.
+            definition_match = re.search(r'([A-Z][a-zA-Z\s]+)\s+(is|are|refers to|means|is defined as|can be defined as)\s+([^\.]+)', sentence)
+            if definition_match:
+                term = definition_match.group(1).strip()
+                definition = definition_match.group(3).strip()
+                
+                # Only use if term and definition are reasonable lengths
+                if 2 <= len(term.split()) <= 5 and len(definition) >= 10:
+                    potential_cards.append({
+                        "question": f"What is {term}?",
+                        "answer": definition
+                    })
                     continue
-                    
-                # Create a question by converting a statement to a question
-                # For example: "The Earth orbits the Sun" -> "What orbits the Sun?"
+            
+            # Pattern 2: Key concepts with colon
+            colon_match = re.search(r'([A-Z][a-zA-Z\s]+):\s+([^\.]+)', sentence)
+            if colon_match:
+                term = colon_match.group(1).strip()
+                explanation = colon_match.group(2).strip()
+                
+                if len(term.split()) <= 5 and len(explanation) >= 10:
+                    potential_cards.append({
+                        "question": f"Explain {term}.",
+                        "answer": explanation
+                    })
+                    continue
+            
+            # Pattern 3: Important facts with numbers/dates
+            if re.search(r'\b(in|on|during)\s+\d{4}\b', sentence) or re.search(r'\b\d+\s+(percent|%)\b', sentence):
+                # Create a factual question by removing key information
                 words = sentence.split()
-                if len(words) >= 5:
-                    subject = ' '.join(words[:2])
-                    remainder = ' '.join(words[2:])
+                if len(words) >= 7:
+                    # Try to identify the subject of the sentence
+                    subject_end = min(3, len(words) // 3)
+                    subject = ' '.join(words[:subject_end])
+                    remainder = ' '.join(words[subject_end:])
+                    
+                    # Create a question that asks about the factual information
                     potential_cards.append({
                         "question": f"What {remainder}?",
-                        "answer": subject + " " + remainder
+                        "answer": sentence
                     })
                     
-        # Ensure we only return the requested number of unique cards
+        # If we still don't have enough cards, look for sentences with key educational terms
+        if len(potential_cards) < num_cards:
+            important_terms = ["key", "important", "significant", "essential", "fundamental", 
+                               "critical", "vital", "primary", "main", "major", "central"]
+            
+            for sentence in sentences:
+                if len(potential_cards) >= num_cards * 2:  # Generate extras for filtering
+                    break
+                    
+                # Look for sentences that seem to be stating important concepts
+                if any(term in sentence.lower() for term in important_terms):
+                    # Create a question by removing the last part of the sentence
+                    words = sentence.split()
+                    if len(words) >= 8:
+                        question_part = ' '.join(words[:len(words)//2])
+                        potential_cards.append({
+                            "question": f"Complete this statement: {question_part}...",
+                            "answer": sentence
+                        })
+        
+        # Ensure we have unique, quality cards
         unique_cards = []
         questions_seen = set()
         
-        for card in potential_cards:
+        # First pass: eliminate exact duplicates and prefer shorter answers
+        sorted_cards = sorted(potential_cards, key=lambda x: len(x["answer"]))
+        
+        for card in sorted_cards:
             q = card["question"].lower()
-            if q not in questions_seen and len(unique_cards) < num_cards:
+            if q not in questions_seen and len(unique_cards) < num_cards * 1.5:  # Get 50% more than needed for validation
                 questions_seen.add(q)
                 unique_cards.append(card)
+        
+        # Second pass: Ensure answers are concise (under 150 chars) and questions are clear
+        final_cards = []
+        for card in unique_cards:
+            # Limit answer length for readability
+            if len(card["answer"]) > 150:
+                card["answer"] = card["answer"][:147] + "..."
                 
-        return unique_cards[:num_cards]
+            # Ensure question ends with ? or .
+            if not card["question"].endswith("?") and not card["question"].endswith("."):
+                card["question"] += "?"
+                
+            final_cards.append(card)
+                
+        return final_cards[:num_cards]  # Return only the requested number of cards
     
     except Exception as e:
         print(f"Error generating flashcards: {e}")
